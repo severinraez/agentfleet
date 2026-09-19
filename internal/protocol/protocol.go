@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 )
 
 // Version is the protocol both sides must agree on. A hub rejects any other
@@ -68,6 +69,26 @@ const (
 	OpList = "list"
 )
 
+// identRE admits one short, unsurprising identifier: no '/', no leading dot,
+// nothing that needs quoting in a log line. Both a sandbox id and a capability
+// name must match it — they arrive on the wire, so the rule lives with the
+// wire format and both sides enforce the same one.
+var identRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// ValidIdent reports whether s is usable as a sandbox id or capability name.
+func ValidIdent(s string) bool { return identRE.MatchString(s) }
+
+// ValidateSandboxID checks the id a sandbox announces. A sandbox picks its own
+// id, so the hub applies this to what arrives on the wire and the sandbox's own
+// config applies it before dialling — one rule and one message, because the
+// person who has to fix it reads whichever of the two happens to complain.
+func ValidateSandboxID(id string) error {
+	if !ValidIdent(id) {
+		return fmt.Errorf("sandbox.id %q is not usable: 1-64 characters of letters, digits, dot, dash or underscore, starting with a letter or digit", id)
+	}
+	return nil
+}
+
 // Hello is the first message of every connection.
 type Hello struct {
 	Protocol string   `json:"protocol"`
@@ -78,10 +99,20 @@ type Hello struct {
 }
 
 // Exit reports how the host binary ended. Signal is set instead of Code when
-// the binary was killed, and the sandbox turns it into 128+N.
+// the binary was killed, and Status turns it into 128+N.
 type Exit struct {
 	Code   int `json:"code"`
 	Signal int `json:"signal,omitempty"`
+}
+
+// Status is the exit code this ending becomes: a signalled binary is reported
+// as 128+N, the way a shell reports it. The sandbox exits with this and the
+// hub logs it, so the rule lives here rather than in each of them.
+func (e Exit) Status() int {
+	if e.Signal != 0 {
+		return 128 + e.Signal
+	}
+	return e.Code
 }
 
 // Fatal is agentfleet itself failing: the sandbox prints Message and exits 125.

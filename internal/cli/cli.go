@@ -42,9 +42,9 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "rpc":
 		return runRPC(args[1:], stdin, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "agentfleet: unknown command %q\n\n", args[0])
-		fmt.Fprint(stderr, usage)
-		return protocol.ExitAgentfleet
+		code := fail(stderr, fmt.Sprintf("unknown command %q", args[0]))
+		fmt.Fprint(stderr, "\n"+usage)
+		return code
 	}
 }
 

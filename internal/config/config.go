@@ -9,10 +9,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/goccy/go-yaml"
+
+	"github.com/severinraez/agentfleet/internal/protocol"
 )
 
 // Config holds every setting, for both roles. A hub uses hub.listen and the
@@ -51,37 +52,42 @@ type setting struct {
 	key    string
 	env    string
 	isPath bool
-	get    func(*Config) string
-	set    func(*Config, string)
+	// field addresses the setting in a Config, for both reading and writing:
+	// one accessor cannot name a different field on the way in than on the
+	// way out.
+	field func(*Config) *string
 }
 
-var settings = []setting{
-	{
+var (
+	settingHubListen = setting{
 		key: "hub.listen", env: "AF_HUB_LISTEN",
-		get: func(c *Config) string { return c.Hub.Listen },
-		set: func(c *Config, v string) { c.Hub.Listen = v },
-	},
-	{
+		field: func(c *Config) *string { return &c.Hub.Listen },
+	}
+	settingHubURL = setting{
 		key: "hub.url", env: "AF_HUB_URL",
-		get: func(c *Config) string { return c.Hub.URL },
-		set: func(c *Config, v string) { c.Hub.URL = v },
-	},
-	{
+		field: func(c *Config) *string { return &c.Hub.URL },
+	}
+	settingRPCDirectory = setting{
 		key: "rpc.directory", env: "AF_RPC_DIRECTORY", isPath: true,
-		get: func(c *Config) string { return c.RPC.Directory },
-		set: func(c *Config, v string) { c.RPC.Directory = v },
-	},
-	{
+		field: func(c *Config) *string { return &c.RPC.Directory },
+	}
+	settingRPCWorkingDirectory = setting{
 		key: "rpc.working_directory", env: "AF_RPC_WORKING_DIRECTORY", isPath: true,
-		get: func(c *Config) string { return c.RPC.WorkingDirectory },
-		set: func(c *Config, v string) { c.RPC.WorkingDirectory = v },
-	},
-	{
+		field: func(c *Config) *string { return &c.RPC.WorkingDirectory },
+	}
+	settingSandboxID = setting{
 		key: "sandbox.id", env: "AF_SANDBOX_ID",
-		get: func(c *Config) string { return c.Sandbox.ID },
-		set: func(c *Config, v string) { c.Sandbox.ID = v },
-	},
-}
+		field: func(c *Config) *string { return &c.Sandbox.ID },
+	}
+
+	settings = []setting{
+		settingHubListen,
+		settingHubURL,
+		settingRPCDirectory,
+		settingRPCWorkingDirectory,
+		settingSandboxID,
+	}
+)
 
 // Loader resolves configuration. The zero value reads the real environment and
 // the real working directory; tests fill the fields in instead.
@@ -131,17 +137,16 @@ func (l Loader) Load() (*Config, error) {
 	}
 
 	for _, s := range settings {
-		value := s.get(cfg)
+		value := s.field(cfg)
 		base := fileDir
 		if v, ok := lookup(s.env); ok {
 			// An empty environment variable is a deliberate empty value, not
 			// a fallthrough to the file.
-			value, base = v, wd
+			*value, base = v, wd
 		}
-		if s.isPath && value != "" && !filepath.IsAbs(value) {
-			value = filepath.Clean(filepath.Join(base, value))
+		if s.isPath && *value != "" && !filepath.IsAbs(*value) {
+			*value = filepath.Clean(filepath.Join(base, *value))
 		}
-		s.set(cfg, value)
 	}
 	return cfg, nil
 }
@@ -197,44 +202,33 @@ func readFile(path string, cfg *Config) error {
 
 // RequireHub checks the settings the host side needs.
 func (c *Config) RequireHub() error {
-	if err := c.require("hub.listen", c.Hub.Listen); err != nil {
+	if err := c.require(settingHubListen); err != nil {
 		return err
 	}
-	return c.require("rpc.directory", c.RPC.Directory)
+	return c.require(settingRPCDirectory)
 }
 
 // RequireSandbox checks the settings the sandbox side needs.
 func (c *Config) RequireSandbox() error {
-	if err := c.require("hub.url", c.Hub.URL); err != nil {
+	if err := c.require(settingHubURL); err != nil {
 		return err
 	}
-	if err := c.require("sandbox.id", c.Sandbox.ID); err != nil {
+	if err := c.require(settingSandboxID); err != nil {
 		return err
 	}
 	return ValidateSandboxID(c.Sandbox.ID)
 }
 
-func (c *Config) require(key, value string) error {
-	if strings.TrimSpace(value) != "" {
+// require reports a missing setting under both its spellings, because which
+// one the reader is looking for is rarely obvious from one side alone.
+func (c *Config) require(s setting) error {
+	if strings.TrimSpace(*s.field(c)) != "" {
 		return nil
 	}
-	for _, s := range settings {
-		if s.key == key {
-			return fmt.Errorf("%s is not set (%s: %s, or %s)", key, FileName, key, s.env)
-		}
-	}
-	return fmt.Errorf("%s is not set", key)
+	return fmt.Errorf("%s is not set (%s: %s, or %s)", s.key, FileName, s.key, s.env)
 }
-
-var sandboxIDRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // ValidateSandboxID keeps sandbox ids to something that can be an environment
-// variable value and a log field without surprises. The hub applies the same
-// rule to what arrives on the wire — the sandbox picks its own id, so the rule
-// has to hold on the receiving side too.
-func ValidateSandboxID(id string) error {
-	if !sandboxIDRE.MatchString(id) {
-		return fmt.Errorf("sandbox.id %q is not usable: 1-64 characters of letters, digits, dot, dash or underscore, starting with a letter or digit", id)
-	}
-	return nil
-}
+// variable value and a log field without surprises. It is the wire rule, from
+// protocol, because the hub checks the very same id on the receiving side.
+func ValidateSandboxID(id string) error { return protocol.ValidateSandboxID(id) }

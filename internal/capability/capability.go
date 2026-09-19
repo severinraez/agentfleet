@@ -11,17 +11,16 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
-	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/severinraez/agentfleet/internal/protocol"
 )
 
 // Capability is one entry of the rpc directory.
 type Capability struct {
 	Name        string
 	Description string
-	Path        string
 }
 
 // ErrUnknown is returned for any name that does not resolve to a runnable
@@ -30,13 +29,13 @@ type Capability struct {
 // should not be distinguishable from the outside.
 var ErrUnknown = errors.New("unknown capability")
 
-// nameRE admits a single path element of ordinary characters. It has no '/'
-// and no leading dot, so "..", "a/b" and "/etc/passwd" cannot match — that is
-// the whole point, and it is why Resolve validates before it joins.
-var nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
-
 // ValidName reports whether name may be looked up in an rpc directory.
-func ValidName(name string) bool { return nameRE.MatchString(name) }
+//
+// The rule is protocol.ValidIdent: a single path element of ordinary
+// characters, with no '/' and no leading dot, so "..", "a/b" and "/etc/passwd"
+// cannot match. That is the whole point, and it is why Resolve validates
+// before it joins.
+func ValidName(name string) bool { return protocol.ValidIdent(name) }
 
 // Resolve turns a name from a sandbox into a path to run, or ErrUnknown.
 func Resolve(dir, name string) (string, error) {
@@ -51,7 +50,8 @@ func Resolve(dir, name string) (string, error) {
 	return path, nil
 }
 
-// List returns the capabilities of dir, sorted by name.
+// List returns the capabilities of dir, sorted by name — os.ReadDir returns
+// entries sorted by filename and filtering preserves that order.
 func List(dir string) ([]Capability, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -70,9 +70,8 @@ func List(dir string) ([]Capability, error) {
 			// something the hub would then refuse.
 			continue
 		}
-		caps = append(caps, Capability{Name: name, Description: Describe(path), Path: path})
+		caps = append(caps, Capability{Name: name, Description: Describe(path)})
 	}
-	sort.Slice(caps, func(i, j int) bool { return caps[i].Name < caps[j].Name })
 	return caps, nil
 }
 

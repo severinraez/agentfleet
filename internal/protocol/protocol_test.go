@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -17,7 +18,7 @@ func TestEncodeDecodeStream(t *testing.T) {
 		if msg.Kind != KindStdout {
 			t.Errorf("kind = %v, want stdout", msg.Kind)
 		}
-		if !bytes.Equal(msg.Data, payload) && !(len(msg.Data) == 0 && len(payload) == 0) {
+		if !bytes.Equal(msg.Data, payload) {
 			t.Errorf("payload round-tripped as %q", msg.Data)
 		}
 	}
@@ -62,7 +63,7 @@ func TestJSONReportsTheKind(t *testing.T) {
 	if err == nil {
 		t.Fatal("JSON succeeded on garbage")
 	}
-	if want := "malformed exit message"; err.Error()[:len(want)] != want {
+	if want := "malformed exit message"; !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("error = %q, want it to start with %q", err, want)
 	}
 }

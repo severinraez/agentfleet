@@ -23,8 +23,7 @@ import (
 func Run(ctx context.Context, cfg *config.Config, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	ws, _, err := websocket.Dial(ctx, cfg.Hub.URL, nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "agentfleet: cannot reach the hub at %s: %v\n", cfg.Hub.URL, err)
-		return protocol.ExitAgentfleet
+		return fail(stderr, fmt.Sprintf("cannot reach the hub at %s: %v", cfg.Hub.URL, err))
 	}
 	c := protocol.NewConn(ws)
 	defer c.CloseNow()
@@ -41,8 +40,7 @@ func Run(ctx context.Context, cfg *config.Config, name string, args []string, st
 		Args:     args,
 	}
 	if err := c.SendJSON(ctx, protocol.KindHello, hello); err != nil {
-		fmt.Fprintf(stderr, "agentfleet: talking to the hub at %s: %v\n", cfg.Hub.URL, err)
-		return protocol.ExitAgentfleet
+		return fail(stderr, fmt.Sprintf("talking to the hub at %s: %v", cfg.Hub.URL, err))
 	}
 
 	if op == protocol.OpList {
@@ -98,10 +96,7 @@ func exec(ctx context.Context, c *protocol.Conn, stdin io.Reader, stdout, stderr
 			if err := msg.JSON(&exit); err != nil {
 				return fail(stderr, err.Error())
 			}
-			if exit.Signal != 0 {
-				return 128 + exit.Signal
-			}
-			return exit.Code
+			return exit.Status()
 		case protocol.KindFatal:
 			return fatal(stderr, msg)
 		}
@@ -109,19 +104,8 @@ func exec(ctx context.Context, c *protocol.Conn, stdin io.Reader, stdout, stderr
 }
 
 func pumpStdin(ctx context.Context, c *protocol.Conn, r io.Reader) {
-	buf := make([]byte, protocol.ChunkSize)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			if err := c.Send(ctx, protocol.KindStdin, buf[:n]); err != nil {
-				return
-			}
-		}
-		if err != nil {
-			c.Send(ctx, protocol.KindStdinEOF, nil)
-			return
-		}
-	}
+	c.Pump(ctx, protocol.KindStdin, r)
+	c.Send(ctx, protocol.KindStdinEOF, nil)
 }
 
 func fatal(stderr io.Writer, msg protocol.Message) int {

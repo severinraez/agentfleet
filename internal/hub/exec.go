@@ -20,12 +20,11 @@ type process struct {
 	stdout io.ReadCloser
 	stderr io.ReadCloser
 
+	// done is closed once cmd.Wait has returned. mu guards the closing, so
+	// that a signal is never sent to a process group whose leader has already
+	// been reaped and whose pid could be reused.
+	mu   sync.Mutex
 	done chan struct{}
-
-	// mu guards reaped, so that a signal is never sent to a process group
-	// whose leader has already been reaped and whose pid could be reused.
-	mu     sync.Mutex
-	reaped bool
 }
 
 // start runs a capability with the hub's environment plus the caller's name.
@@ -65,9 +64,8 @@ func (p *process) wait() (protocol.Exit, error) {
 	err := p.cmd.Wait()
 
 	p.mu.Lock()
-	p.reaped = true
-	p.mu.Unlock()
 	close(p.done)
+	p.mu.Unlock()
 
 	if err == nil {
 		return protocol.Exit{Code: 0}, nil
@@ -101,8 +99,10 @@ func (p *process) kill(grace time.Duration) {
 func (p *process) signal(sig syscall.Signal) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.reaped {
+	select {
+	case <-p.done: // already reaped
 		return false
+	default:
 	}
 	// The negative pid addresses the group; Setpgid made the child its leader,
 	// so the group id is its pid.

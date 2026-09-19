@@ -18,7 +18,6 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/severinraez/agentfleet/internal/capability"
-	"github.com/severinraez/agentfleet/internal/config"
 	"github.com/severinraez/agentfleet/internal/protocol"
 )
 
@@ -44,9 +43,6 @@ type Hub struct {
 	// Defaults to os.Stderr.
 	Errors io.Writer
 
-	// Now defaults to time.Now and supplies the timestamp of a log line.
-	Now func() time.Time
-
 	// KillGrace is how long a wrapper has between SIGTERM and SIGKILL once
 	// its caller is gone.
 	KillGrace time.Duration
@@ -63,21 +59,26 @@ type Hub struct {
 	calls    sync.WaitGroup
 }
 
+// prefix names the hub in everything it writes, on either stream.
+const prefix = "agentfleet hub: "
+
+// init fills in every optional field, so that the rest of the hub reads them
+// directly instead of each use site rediscovering the default. Every entry
+// point calls it before touching anything it normalizes.
 func (h *Hub) init() {
 	h.initOnce.Do(func() {
-		out := h.Audit
-		if out == nil {
-			out = os.Stdout
+		if h.Audit == nil {
+			h.Audit = os.Stdout
 		}
-		h.audit = &auditLog{w: out}
+		if h.Errors == nil {
+			h.Errors = os.Stderr
+		}
+		h.KillGrace = orDefault(h.KillGrace, DefaultKillGrace)
+		h.PingInterval = orDefault(h.PingInterval, DefaultPingInterval)
+		h.PingTimeout = orDefault(h.PingTimeout, DefaultPingTimeout)
+		h.HandshakeTimeout = orDefault(h.HandshakeTimeout, DefaultHandshakeTimeout)
+		h.audit = &auditLog{w: h.Audit}
 	})
-}
-
-func (h *Hub) now() time.Time {
-	if h.Now != nil {
-		return h.Now()
-	}
-	return time.Now()
 }
 
 func orDefault(v, fallback time.Duration) time.Duration {
@@ -91,15 +92,11 @@ func orDefault(v, fallback time.Duration) time.Duration {
 // log: starting up is news for whoever is watching the calls go by, not a
 // diagnostic to be filtered out.
 func (h *Hub) announce(format string, args ...any) {
-	h.audit.line(fmt.Sprintf("agentfleet hub: "+format, args...))
+	h.audit.line(fmt.Sprintf(prefix+format, args...))
 }
 
 func (h *Hub) errorf(format string, args ...any) {
-	w := h.Errors
-	if w == nil {
-		w = os.Stderr
-	}
-	fmt.Fprintf(w, "agentfleet hub: "+format+"\n", args...)
+	fmt.Fprintf(h.Errors, prefix+format+"\n", args...)
 }
 
 // ListenAndServe binds addr and serves until ctx is done.
@@ -166,7 +163,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusUpgradeRequired)
-		io.WriteString(w, "agentfleet hub: this is a websocket endpoint, call it with `agentfleet rpc` from a sandbox\n")
+		io.WriteString(w, prefix+"this is a websocket endpoint, call it with `agentfleet rpc` from a sandbox\n")
 		return
 	}
 
@@ -187,19 +184,12 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.handle(r.Context(), c)
 }
 
-// call carries the two clocks a log line needs: the wall time it is stamped
-// with, and the monotonic start it is measured from.
-type call struct {
-	at    time.Time
-	since time.Time
-}
-
-func (c call) elapsed() time.Duration { return time.Since(c.since) }
-
 func (h *Hub) handle(ctx context.Context, c *protocol.Conn) {
-	started := call{at: h.now(), since: time.Now()}
+	// One reading does both jobs a log line needs: time.Time carries the wall
+	// clock it is stamped with and the monotonic clock it is measured from.
+	started := time.Now()
 
-	hctx, cancel := context.WithTimeout(ctx, orDefault(h.HandshakeTimeout, DefaultHandshakeTimeout))
+	hctx, cancel := context.WithTimeout(ctx, h.HandshakeTimeout)
 	msg, err := c.Recv(hctx)
 	cancel()
 	if err != nil {
@@ -222,7 +212,7 @@ func (h *Hub) handle(ctx context.Context, c *protocol.Conn) {
 				hello.Protocol, protocol.Version))
 		return
 	}
-	if err := config.ValidateSandboxID(hello.Sandbox); err != nil {
+	if err := protocol.ValidateSandboxID(hello.Sandbox); err != nil {
 		h.reject(ctx, c, hello, started, "invalid-sandbox-id", err.Error())
 		return
 	}
@@ -254,17 +244,12 @@ func (h *Hub) fatal(ctx context.Context, c *protocol.Conn, message string) {
 // reject refuses a call. A refused capability call is logged like any other —
 // an attempt that was denied is exactly what this log is for. A refused
 // listing has no capability to name, so it goes to the hub's diagnostics.
-func (h *Hub) reject(ctx context.Context, c *protocol.Conn, hello protocol.Hello, started call, reason, message string) {
+func (h *Hub) reject(ctx context.Context, c *protocol.Conn, hello protocol.Hello, started time.Time, reason, message string) {
 	if hello.Op == protocol.OpExec {
-		h.audit.write(Record{
-			Time:      started.at,
-			SandboxID: hello.Sandbox,
-			Name:      hello.Name,
-			Args:      hello.Args,
-			Exit:      protocol.ExitAgentfleet,
-			Duration:  started.elapsed(),
-			Error:     reason,
-		})
+		record := newRecord(hello, started)
+		record.Duration = time.Since(started)
+		record.Error = reason
+		h.audit.write(record)
 	} else {
 		h.errorf("%s", message)
 	}
@@ -290,31 +275,22 @@ func (h *Hub) list(ctx context.Context, c *protocol.Conn) {
 	}
 }
 
-func (h *Hub) exec(ctx context.Context, c *protocol.Conn, hello protocol.Hello, started call) {
+func (h *Hub) exec(ctx context.Context, c *protocol.Conn, hello protocol.Hello, started time.Time) {
 	path, err := capability.Resolve(h.Directory, hello.Name)
 	if err != nil {
 		h.reject(ctx, c, hello, started, "unknown-capability", err.Error())
 		return
 	}
 
-	record := Record{
-		Time:      started.at,
-		SandboxID: hello.Sandbox,
-		Name:      hello.Name,
-		Args:      hello.Args,
-		Exit:      protocol.ExitAgentfleet,
-	}
+	record := newRecord(hello, started)
 
 	exit, in, out, err := h.run(ctx, c, hello, path)
 	record.In, record.Out = in, out
-	record.Duration = started.elapsed()
-	switch {
-	case err != nil:
+	record.Duration = time.Since(started)
+	if err != nil {
 		record.Error = "exec-failed"
-	case exit.Signal != 0:
-		record.Exit = 128 + exit.Signal
-	default:
-		record.Exit = exit.Code
+	} else {
+		record.Exit = exit.Status()
 	}
 	h.audit.write(record)
 	if err != nil {
@@ -326,9 +302,7 @@ func (h *Hub) exec(ctx context.Context, c *protocol.Conn, hello protocol.Hello, 
 // run starts the capability and moves bytes until it ends, or until the
 // sandbox goes away and the process group is taken down with it.
 func (h *Hub) run(ctx context.Context, c *protocol.Conn, hello protocol.Hello, path string) (protocol.Exit, int64, int64, error) {
-	workDir := h.WorkingDirectory
-
-	proc, err := start(path, workDir, hello.Sandbox, hello.Args)
+	proc, err := start(path, h.WorkingDirectory, hello.Sandbox, hello.Args)
 	if err != nil {
 		return protocol.Exit{}, 0, 0, err
 	}
@@ -341,18 +315,26 @@ func (h *Hub) run(ctx context.Context, c *protocol.Conn, hello protocol.Hello, p
 	go func() {
 		select {
 		case <-callCtx.Done():
-			proc.kill(orDefault(h.KillGrace, DefaultKillGrace))
+			proc.kill(h.KillGrace)
 		case <-proc.done:
 		}
 	}()
-	go h.ping(callCtx, c, cancel)
+	go func() {
+		if h.ping(callCtx, c) != nil {
+			cancel()
+		}
+	}()
 
 	var in, out atomic.Int64
 
 	var pumps sync.WaitGroup
 	pumps.Add(2)
-	go pumpOut(callCtx, c, protocol.KindStdout, proc.stdout, &out, &pumps)
-	go pumpOut(callCtx, c, protocol.KindStderr, proc.stderr, &out, &pumps)
+	pumpOut := func(kind protocol.Kind, r io.Reader) {
+		defer pumps.Done()
+		out.Add(c.Pump(callCtx, kind, r))
+	}
+	go pumpOut(protocol.KindStdout, proc.stdout)
+	go pumpOut(protocol.KindStderr, proc.stderr)
 
 	go func() {
 		// The read loop runs for the life of the connection: it feeds stdin,
@@ -370,24 +352,6 @@ func (h *Hub) run(ctx context.Context, c *protocol.Conn, hello protocol.Hello, p
 		h.errorf("%s: reporting the exit: %v", hello.Name, err)
 	}
 	return exit, in.Load(), out.Load(), nil
-}
-
-// pumpOut forwards one of the capability's output streams to the sandbox.
-func pumpOut(ctx context.Context, c *protocol.Conn, kind protocol.Kind, r io.Reader, out *atomic.Int64, wg *sync.WaitGroup) {
-	defer wg.Done()
-	buf := make([]byte, protocol.ChunkSize)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			out.Add(int64(n))
-			if err := c.Send(ctx, kind, buf[:n]); err != nil {
-				return
-			}
-		}
-		if err != nil {
-			return
-		}
-	}
 }
 
 // pumpIn feeds the capability's stdin from the connection and keeps reading
@@ -426,21 +390,22 @@ func (h *Hub) pumpIn(ctx context.Context, c *protocol.Conn, w io.WriteCloser, in
 }
 
 // ping notices a sandbox that disappeared without closing its connection —
-// the case where TCP alone would keep a host process alive for hours.
-func (h *Hub) ping(ctx context.Context, c *protocol.Conn, cancel context.CancelFunc) {
-	ticker := time.NewTicker(orDefault(h.PingInterval, DefaultPingInterval))
+// the case where TCP alone would keep a host process alive for hours. It
+// reports the peer going quiet and leaves taking the call down to run, which
+// is what owns the call's lifetime.
+func (h *Hub) ping(ctx context.Context, c *protocol.Conn) error {
+	ticker := time.NewTicker(h.PingInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-ticker.C:
-			pctx, pcancel := context.WithTimeout(ctx, orDefault(h.PingTimeout, DefaultPingTimeout))
+			pctx, pcancel := context.WithTimeout(ctx, h.PingTimeout)
 			err := c.Ping(pctx)
 			pcancel()
 			if err != nil && ctx.Err() == nil {
-				cancel()
-				return
+				return err
 			}
 		}
 	}

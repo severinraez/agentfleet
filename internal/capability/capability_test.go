@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -50,17 +51,8 @@ func TestList(t *testing.T) {
 		{Name: "notify", Description: "send a message to the #agents channel"},
 		{Name: "plain", Description: ""},
 	}
-	if len(caps) != len(want) {
-		var names []string
-		for _, c := range caps {
-			names = append(names, c.Name)
-		}
-		t.Fatalf("List returned %v, want %d entries", names, len(want))
-	}
-	for i, w := range want {
-		if caps[i].Name != w.Name || caps[i].Description != w.Description {
-			t.Errorf("entry %d = %q/%q, want %q/%q", i, caps[i].Name, caps[i].Description, w.Name, w.Description)
-		}
+	if !slices.Equal(caps, want) {
+		t.Errorf("List = %+v, want %+v", caps, want)
 	}
 }
 

@@ -163,9 +163,15 @@ func TestListenAndServeAnnouncesOnTheLogStream(t *testing.T) {
 	served := make(chan error, 1)
 	go func() { served <- h.ListenAndServe(ctx, "127.0.0.1:0") }()
 
+	announced := func() bool { return strings.Contains(out.String(), "listening on") }
 	deadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(out.String(), "listening on") && time.Now().Before(deadline) {
+	for !announced() && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
+	}
+	// Re-check after the deadline: on a loaded machine the last sleep can
+	// outlast it even though the hub did announce itself.
+	if !announced() {
+		t.Error("the hub did not announce itself within 5s")
 	}
 	cancel()
 	if err := <-served; err != nil {

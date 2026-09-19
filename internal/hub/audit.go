@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/severinraez/agentfleet/internal/protocol"
 )
 
 // Record is one line of the hub's log: the whole logging story, per call.
@@ -26,6 +28,19 @@ type Record struct {
 	In        int64
 	Out       int64
 	Error     string
+}
+
+// newRecord starts the log line for one call. Everything known before the
+// capability runs is filled in here, so that a refused call and a completed
+// one cannot describe themselves differently.
+func newRecord(hello protocol.Hello, started time.Time) Record {
+	return Record{
+		Time:      started,
+		SandboxID: hello.Sandbox,
+		Name:      hello.Name,
+		Args:      hello.Args,
+		Exit:      protocol.ExitAgentfleet,
+	}
 }
 
 func (r Record) String() string {
@@ -64,14 +79,14 @@ func field(s string) string {
 	return s
 }
 
+var units = []string{"kB", "MB", "GB", "TB", "PB"}
+
 // bytesOf formats a byte count the way the README shows it: 0B, 340B, 2.1kB.
 func bytesOf(n int64) string {
 	if n < 1000 {
 		return fmt.Sprintf("%dB", n)
 	}
-	v := float64(n)
-	units := []string{"kB", "MB", "GB", "TB", "PB"}
-	i := -1
+	v, i := float64(n)/1000, 0
 	for v >= 1000 && i < len(units)-1 {
 		v /= 1000
 		i++
@@ -94,9 +109,6 @@ func (l *auditLog) write(r Record) {
 // announcements. It takes the same lock, so an announcement cannot land in the
 // middle of a record.
 func (l *auditLog) line(s string) {
-	if l == nil || l.w == nil {
-		return
-	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	io.WriteString(l.w, s+"\n")

@@ -146,18 +146,21 @@ func TestListing(t *testing.T) {
 	}
 }
 
-// The wrapper gets the hub's environment plus the caller's name, and nothing
-// the sandbox chose.
+// The wrapper gets the hub's environment plus the caller's name and the
+// address it called from, and nothing else the sandbox chose.
 func TestCapabilityEnvironment(t *testing.T) {
 	t.Setenv("AF_TEST_HOST_SECRET", "from-the-host")
 	f := start(t)
-	f.capability("env", "#!/bin/sh\necho \"id=$AF_SANDBOX_ID\"\necho \"secret=$AF_TEST_HOST_SECRET\"\necho \"url=$AF_HUB_URL\"\n")
+	f.capability("env", "#!/bin/sh\necho \"id=$AF_SANDBOX_ID\"\necho \"secret=$AF_TEST_HOST_SECRET\"\necho \"url=$AF_HUB_URL\"\necho \"peer=$AF_PEER_ADDR\"\n")
 
 	r := f.callAs(context.Background(), "box-7", nil, "env")
 
-	want := "id=box-7\nsecret=from-the-host\nurl=\n"
-	if r.stdout != want {
-		t.Errorf("stdout = %q, want %q", r.stdout, want)
+	// The port is whatever the kernel handed the client, so only the address
+	// half of AF_PEER_ADDR is pinned — that half is what a capability
+	// allowlists on.
+	want := "id=box-7\nsecret=from-the-host\nurl=\npeer=127.0.0.1:"
+	if !strings.HasPrefix(r.stdout, want) {
+		t.Errorf("stdout = %q, want it to start with %q", r.stdout, want)
 	}
 }
 

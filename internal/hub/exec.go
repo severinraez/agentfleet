@@ -27,16 +27,19 @@ type process struct {
 	done chan struct{}
 }
 
-// start runs a capability with the hub's environment plus the caller's name.
-func start(path, workDir, sandboxID string, args []string) (*process, error) {
+// start runs a capability with the hub's environment plus the caller's name
+// and the address it called from.
+func start(path, workDir, sandboxID, peer string, args []string) (*process, error) {
 	cmd := exec.Command(path, args...)
 	cmd.Dir = workDir
 
-	// The hub's environment, credentials and all, plus AF_SANDBOX_ID. Nothing
-	// from the wire ever becomes an environment variable — that is what keeps
-	// LD_PRELOAD, BASH_ENV and GIT_SSH_COMMAND from turning every capability
-	// into arbitrary host execution.
-	cmd.Env = append(os.Environ(), "AF_SANDBOX_ID="+sandboxID)
+	// The hub's environment, credentials and all, plus AF_SANDBOX_ID and
+	// AF_PEER_ADDR. Nothing from the wire ever becomes an environment variable
+	// — that is what keeps LD_PRELOAD, BASH_ENV and GIT_SSH_COMMAND from
+	// turning every capability into arbitrary host execution. AF_PEER_ADDR is
+	// the connection's own remote address, so it is the one value here a
+	// sandbox cannot pick for itself, and the only reason to pass it.
+	cmd.Env = append(os.Environ(), "AF_SANDBOX_ID="+sandboxID, "AF_PEER_ADDR="+peer)
 
 	// Its own process group, so a wrapper's children go down with it instead
 	// of being leaked when the sandbox disappears.

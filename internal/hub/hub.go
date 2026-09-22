@@ -181,10 +181,10 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c := protocol.NewConn(ws)
 	defer c.CloseNow()
 
-	h.handle(r.Context(), c)
+	h.handle(r.Context(), c, r.RemoteAddr)
 }
 
-func (h *Hub) handle(ctx context.Context, c *protocol.Conn) {
+func (h *Hub) handle(ctx context.Context, c *protocol.Conn, peer string) {
 	// One reading does both jobs a log line needs: time.Time carries the wall
 	// clock it is stamped with and the monotonic clock it is measured from.
 	started := time.Now()
@@ -221,7 +221,7 @@ func (h *Hub) handle(ctx context.Context, c *protocol.Conn) {
 	case protocol.OpList:
 		h.list(ctx, c)
 	case protocol.OpExec:
-		h.exec(ctx, c, hello, started)
+		h.exec(ctx, c, hello, started, peer)
 	default:
 		h.reject(ctx, c, hello, started, "unknown-op", fmt.Sprintf("unknown operation %q", hello.Op))
 	}
@@ -275,7 +275,7 @@ func (h *Hub) list(ctx context.Context, c *protocol.Conn) {
 	}
 }
 
-func (h *Hub) exec(ctx context.Context, c *protocol.Conn, hello protocol.Hello, started time.Time) {
+func (h *Hub) exec(ctx context.Context, c *protocol.Conn, hello protocol.Hello, started time.Time, peer string) {
 	path, err := capability.Resolve(h.Directory, hello.Name)
 	if err != nil {
 		h.reject(ctx, c, hello, started, "unknown-capability", err.Error())
@@ -284,7 +284,7 @@ func (h *Hub) exec(ctx context.Context, c *protocol.Conn, hello protocol.Hello, 
 
 	record := newRecord(hello, started)
 
-	exit, in, out, err := h.run(ctx, c, hello, path)
+	exit, in, out, err := h.run(ctx, c, hello, path, peer)
 	record.In, record.Out = in, out
 	record.Duration = time.Since(started)
 	if err != nil {
@@ -301,8 +301,8 @@ func (h *Hub) exec(ctx context.Context, c *protocol.Conn, hello protocol.Hello, 
 
 // run starts the capability and moves bytes until it ends, or until the
 // sandbox goes away and the process group is taken down with it.
-func (h *Hub) run(ctx context.Context, c *protocol.Conn, hello protocol.Hello, path string) (protocol.Exit, int64, int64, error) {
-	proc, err := start(path, h.WorkingDirectory, hello.Sandbox, hello.Args)
+func (h *Hub) run(ctx context.Context, c *protocol.Conn, hello protocol.Hello, path, peer string) (protocol.Exit, int64, int64, error) {
+	proc, err := start(path, h.WorkingDirectory, hello.Sandbox, peer, hello.Args)
 	if err != nil {
 		return protocol.Exit{}, 0, 0, err
 	}

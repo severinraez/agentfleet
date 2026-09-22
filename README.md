@@ -102,6 +102,8 @@ Wrappers run with the hub's environment, credentials and all, plus `AF_SANDBOX_I
 exec kubectl --namespace="agent-$AF_SANDBOX_ID" "$@"
 ```
 
+`AF_PEER_ADDR` is the other one: the `host:port` the call came from, as the hub's listener saw it. Unlike the name, the sandbox does not choose it, so a wrapper can allow-list the addresses it answers — see [Security](#security) for how far that goes.
+
 Their working directory is the hub's, or `rpc.working_directory` if you set it.
 
 ## Configuration
@@ -141,6 +143,8 @@ In the sandbox:
 **There is no authentication.** Anyone who can open a connection to `hub.listen` can run anything in `rpc.directory`. Reachability is the authorization — bind an interface only your sandboxes can reach, a container bridge or a VM network. That is why `hub.listen` has no default: it is your access control list, and defaulting it would make that easy to miss.
 
 **`AF_SANDBOX_ID` is a label, not an identity.** The sandbox chooses it. Log lines carry it and wrappers can scope on it, but never grant anything on the strength of a name another sandbox could also claim.
+
+**`AF_PEER_ADDR` is the one thing it does not choose.** It comes off the connection rather than out of the handshake, so an address allow-list in a wrapper is worth more than a name check. It is still only as strong as the network it is read on: anything that can spoof a source address on that interface, or reach the hub through a NAT that rewrites one, defeats it. Treat it as a way to keep two sandboxes on the same bridge out of each other's capabilities, not as authentication.
 
 **`rpc.directory` is a capability set, not a list of programs you trust.** Arguments are not filtered, so a general-purpose binary in there is a full host escape — `git` gets you `git config core.pager='sh -c …'`, and anything with a `--exec` or `-c` flag tells the same story. Never symlink system binaries into it. The narrowness of your wrappers is the only thing standing between a sandboxed agent and your host.
 

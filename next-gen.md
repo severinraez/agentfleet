@@ -76,14 +76,14 @@ Store configuration and secrets to be used by agents
 `echo "secret" | agentfleet secret set nested.secret_a`
 `echo "secret" | agentfleet secret set nested.secret_b`
 
-`agentfleet config set myconfig value`
+`agentfleet config set myconfig`
 `echo "config" | agentfleet config set myconfig`
 `echo "config" | agentfleet config set nested.config_a`
 `echo "config" | agentfleet config set nested.config_b`
 
 ## Messaging
 
-Agents can call eachother:
+Agents can call eachother (for now only ephemeral agents can be called):
 
 ```bash
 # Only a message
@@ -126,7 +126,41 @@ Or via stdout and attachments
 
 ```bash
 echo "commit the changes" | agentfleet call git-agent --response-attachments output-dir
-# Response on stdout, attachments in output-dir (created if missing)
+# Response on stdout, attachments in output-dir (created if missingx)
 echo "commit the changes" | agentfleet call git-agent
 # Error: git-agent sends attachments, specify --response-attachments
 ```
+
+## Resources
+
+Agents can use shared resource pools:
+
+````json
+{
+  "name": "host-ports",
+  "kind": "resource",
+  "set": ["3001", "3002", "3003"]
+}
+
+```bash
+$ agentfleet resource checkout host-ports
+3000
+$ agentfleet resource checkout host-ports
+3000
+$ agentfleet resource checkin host-ports
+
+# Other agent:
+$ agentfleet resource checkout host-ports
+3000
+
+# Original agent:
+$ agentfleet resource checkout host-ports
+3001
+```
+
+Blocking wait for resource:
+
+```bash
+agentfleet resource checkout --wait host-ports
+```
+````
